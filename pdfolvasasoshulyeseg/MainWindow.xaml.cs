@@ -1,20 +1,12 @@
-﻿using iText.Kernel.Pdf;
-using iText.Kernel.Pdf.Canvas.Parser;
-using Microsoft.Win32;
-using pdfolvasasoshulyeseg;
-using System.Reflection.PortableExecutable;
+﻿using System.Collections.Generic;
+using System.IO;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Data;
-using System.Windows.Documents;
-using System.Windows.Input;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Navigation;
-using System.Windows.Shapes;
-using static System.Runtime.InteropServices.JavaScript.JSType;
+using Microsoft.Win32;
+using iText.Kernel.Pdf;
+using iText.Kernel.Pdf.Canvas.Parser;
+using iText.Kernel.Pdf.Canvas.Parser.Listener;
+using System.Text.RegularExpressions;
 
 namespace pdfolvasasoshulyeseg
 {
@@ -25,91 +17,127 @@ namespace pdfolvasasoshulyeseg
             InitializeComponent();
         }
 
-        // Load File button event handler
-        private void LoadFileButton_Click(object sender, RoutedEventArgs e)
+        private void LoadReport_Click(object sender, RoutedEventArgs e)
         {
-            OpenFileDialog openFileDialog = new OpenFileDialog();
-            openFileDialog.Filter = "PDF Files (*.pdf)|*.pdf";
+            OpenFileDialog openFileDialog = new OpenFileDialog
+            {
+                Filter = "PDF files (*.pdf)|*.pdf|All files (*.*)|*.*",
+                Title = "Select a Vulnerability Scan Report"
+            };
+
             if (openFileDialog.ShowDialog() == true)
             {
-                string pdfPath = openFileDialog.FileName;
-                List<string> pdfContent = ReadPdfIntoList(pdfPath);
-                pageCountLabel.Content = $"Pages: {pdfContent.Count}";
-
-                // Print PDF content for debugging
-                Console.WriteLine("PDF Content:");
-                foreach (var page in pdfContent)
+                try
                 {
-                    Console.WriteLine(page);
+                    string reportContent = ReadPdf(openFileDialog.FileName);
+                    var vulnerabilities = ParseReport(reportContent);
+                    VulnerabilityDataGrid.ItemsSource = vulnerabilities;
+
+                    // Debug output
+                    DebugTextBox.Text = "Parsed Vulnerabilities:\n";
+                    foreach (var vulnerability in vulnerabilities)
+                    {
+                        DebugTextBox.Text += $"{vulnerability.ID} - {vulnerability.Synopsis}\n";
+                    }
                 }
-
-                // Extract errors from PDF content
-                List<Error> errors = ExtractErrors(pdfContent);
-
-                // Check if any errors were extracted
-                if (errors.Count > 0)
+                catch (IOException ex)
                 {
-                    errorDataGrid.ItemsSource = errors;
+                    MessageBox.Show("Error reading file: " + ex.Message);
                 }
-                else
+                catch (Exception ex)
                 {
-                    MessageBox.Show("No errors found in the PDF.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+                    MessageBox.Show("An error occurred: " + ex.Message);
+                    DebugTextBox.Text += $"Error: {ex.Message}\n";
                 }
             }
         }
 
-        private List<string> ReadPdfIntoList(string pdfPath)
+        private string ReadPdf(string filePath)
         {
-            var pdfContent = new List<string>();
-            using (var pdfReader = new PdfReader(pdfPath))
-            using (var pdfDocument = new PdfDocument(pdfReader))
+            StringBuilder text = new StringBuilder();
+
+            using (PdfDocument pdfDocument = new PdfDocument(new PdfReader(filePath)))
             {
                 for (int i = 1; i <= pdfDocument.GetNumberOfPages(); i++)
                 {
-                    string pageText = PdfTextExtractor.GetTextFromPage(pdfDocument.GetPage(i));
-                    pdfContent.Add(pageText);
+                    ITextExtractionStrategy strategy = new SimpleTextExtractionStrategy();
+                    string currentPageText = PdfTextExtractor.GetTextFromPage(pdfDocument.GetPage(i), strategy);
+                    text.Append(currentPageText);
                 }
             }
-            return pdfContent;
+
+            return text.ToString();
         }
 
-        private List<Error> ExtractErrors(List<string> pdfContent)
+        private List<Vulnerability> ParseReport(string reportContent)
         {
-            List<Error> errors = new List<Error>();
+            List<Vulnerability> vulnerabilities = new List<Vulnerability>();
 
-            // Updated regex pattern to match the error format you provided
-            string errorPattern = @"(?<Id>\d+)\s*-\s*(?<ErrorName>.+?)\s*Synopsis\s*(?<Synopsis>.+?)\s*Description\s*(?<Description>.+?)\s*See Also\s*(?<SeeAlso>.+?)(?=\s*Solution|$)\s*Solution\s*(?<Solution>.+?)(?=\s*Risk Factor|$)\s*Risk Factor\s*(?<RiskFactor>.+?)(?=\s*Plugin Information|$)\s*Plugin Information\s*(?<PluginInformation>.+?)(?=\s*Plugin Output|$)\s*Plugin Output\s*(?<PluginOutput>.+?)(?=\s*$)";
+            // Output the raw report content for debugging
+            DebugTextBox.Text += "Raw Report Content:\n";
+            DebugTextBox.Text += reportContent + "\n";
+            DebugTextBox.Text += "-----------------------------------\n";
 
-            foreach (var pageContent in pdfContent)
+            // Regex pattern to match each vulnerability entry
+            string vulnerabilityPattern = @"(?<ID>\d{5})\s+-\s+(?<Synopsis>.+?)\s+Synopsis\s+([\s\S]*?)Description\s+(?<Description>[\s\S]*?)See Also\s+(?<SeeAlso>[\s\S]*?)Solution\s+(?<Solution>[\s\S]*?)Risk Factor\s+(?<RiskFactor>.+?)\s+CVSS v3\.0 Base Score\s+(?<CVSS3BaseScore>[\d.]+).*?CVSS Base Score\s+(?<CVSSBaseScore>[\d.]+)";
+
+            // Match the regex against the report content
+            var matches = Regex.Matches(reportContent, vulnerabilityPattern, RegexOptions.Singleline);
+
+            // Debug output for regex matches
+            DebugTextBox.Text += $"Total Matches Found: {matches.Count}\n";
+
+            foreach (Match match in matches)
             {
-                var matches = Regex.Matches(pageContent, errorPattern, RegexOptions.Singleline | RegexOptions.IgnoreCase);
-
-                foreach (Match match in matches)
+                if (match.Groups.Count > 1) // Ensure we have captured groups
                 {
-                    if (match.Success)
+                    vulnerabilities.Add(new Vulnerability
                     {
-                        var error = new Error
-                        {
-                            Id = match.Groups["Id"].Value.Trim(),
-                            ErrorName = match.Groups["ErrorName"].Value.Trim(),
-                            Synopsis = match.Groups["Synopsis"].Value.Trim(),
-                            Description = match.Groups["Description"].Value.Trim(),
-                            SeeAlso = match.Groups["SeeAlso"].Value.Trim(),
-                            Solution = match.Groups["Solution"].Value.Trim(),
-                            RiskFactor = match.Groups["RiskFactor"].Value.Trim(),
-                            CVSSv3BaseScore = string.Empty, // Not present in the example
-                            CVSSv3TemporalScore = string.Empty, // Not present in the example
-                            CVSSBaseScore = string.Empty, // Not present in the example
-                            CVSSTemporalScore = string.Empty, // Not present in the example
-                            References = string.Empty, // Not present in the example
-                            PluginInformation = match.Groups["PluginInformation"].Value.Trim(),
-                            PluginOutput = match.Groups["PluginOutput"].Value.Trim(),
-                        };
-                        errors.Add(error);
-                    }
+                        ID = match.Groups["ID"].Value.Trim(),
+                        Synopsis = match.Groups["Synopsis"].Value.Trim(),
+                        Description = match.Groups["Description"].Value.Trim(),
+                        Solution = match.Groups["Solution"].Value.Trim(),
+                        RiskFactor = match.Groups["RiskFactor"].Value.Trim(),
+                        CVSS3BaseScore = match.Groups["CVSS3BaseScore"].Value.Trim(),
+                        CVSSBaseScore = match.Groups["CVSSBaseScore"].Value.Trim(),
+                        SeeAlso = match.Groups["SeeAlso"].Value.Trim()
+                    });
+
+                    // Debug output for each vulnerability
+                    DebugTextBox.Text += $"ID: {match.Groups["ID"].Value.Trim()}\n";
+                    DebugTextBox.Text += $"Synopsis: {match.Groups["Synopsis"].Value.Trim()}\n";
+                    DebugTextBox.Text += $"Description: {match.Groups["Description"].Value.Trim()}\n";
+                    DebugTextBox.Text += $"Solution: {match.Groups["Solution"].Value.Trim()}\n";
+                    DebugTextBox.Text += $"Risk Factor: {match.Groups["RiskFactor"].Value.Trim()}\n";
+                    DebugTextBox.Text += $"CVSS3 Base Score: {match.Groups["CVSS3BaseScore"].Value.Trim()}\n";
+                    DebugTextBox.Text += $"CVSS Base Score: {match.Groups["CVSSBaseScore"].Value.Trim()}\n";
+                    DebugTextBox.Text += $"See Also: {match.Groups["SeeAlso"].Value.Trim()}\n";
+                    DebugTextBox.Text += "-----------------------------------\n";
                 }
             }
-            return errors;
+
+            // Log unmatched lines or patterns
+            string[] lines = reportContent.Split(new[] { Environment.NewLine }, StringSplitOptions.None);
+            foreach (string line in lines)
+            {
+                if (!Regex.IsMatch(line, vulnerabilityPattern))
+                {
+                    DebugTextBox.Text += $"Unmatched Line: {line}\n";
+                }
+            }
+
+            return vulnerabilities;
         }
+    }
+public class Vulnerability
+    {
+        public string ID { get; set; }
+        public string Synopsis { get; set; }
+        public string Description { get; set; }
+        public string Solution { get; set; }
+        public string RiskFactor { get; set; }
+        public string CVSS3BaseScore { get; set; }
+        public string CVSSBaseScore { get; set; }
+        public string SeeAlso { get; set; }
     }
 }
